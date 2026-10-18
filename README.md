@@ -150,7 +150,7 @@ forge quench "anime"
 forge ignite "anime"
 ```
 
-`quench` sends `SIGTERM`. `ignite` runs the saved command again in its saved working directory.
+`quench` sends `SIGTERM`, waits for the process to exit, and escalates to `SIGKILL` if needed. `ignite` runs the saved command again in its saved working directory.
 
 ### Stop and remove a process
 

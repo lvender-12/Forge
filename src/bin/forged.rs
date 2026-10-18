@@ -2,6 +2,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Write},
     os::unix::net::{UnixListener, UnixStream},
+    os::unix::process::CommandExt,
     path::Path,
     process::{Child, Command},
     sync::atomic::{AtomicBool, Ordering},
@@ -17,7 +18,7 @@ use forge::{
     storage,
 };
 use nix::{
-    sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, kill, sigaction},
+    sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, kill, killpg, sigaction},
     sys::wait::{WaitPidFlag, WaitStatus, waitpid},
     unistd::Pid,
 };
@@ -26,12 +27,58 @@ const SOCKET_PATH: &str = "/tmp/forge.sock";
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 fn process_is_alive(pid: Pid) -> bool {
-    match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+    let leader_alive = match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
         Ok(WaitStatus::StillAlive) => true,
         Ok(_) => false,
         Err(nix::errno::Errno::ECHILD) => kill(pid, None).is_ok(),
         Err(_) => kill(pid, None).is_ok(),
+    };
+    leader_alive || killpg(pid, None).is_ok()
+}
+
+fn reap_exited_children() {
+    loop {
+        match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::StillAlive) | Err(nix::errno::Errno::ECHILD) => break,
+            Ok(_) | Err(nix::errno::Errno::EINTR) => continue,
+            Err(_) => break,
+        }
     }
+}
+
+fn send_process_signal(pid: Pid, signal: Signal) -> Result<()> {
+    match killpg(pid, signal) {
+        Ok(()) => Ok(()),
+        Err(nix::errno::Errno::ESRCH) => match kill(pid, signal) {
+            Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
+            Err(error) => Err(error.into()),
+        },
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn stop_process(pid: u32) -> Result<()> {
+    let process_id = Pid::from_raw(pid as i32);
+    send_process_signal(process_id, Signal::SIGTERM)?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_is_alive(process_id) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    if process_is_alive(process_id) {
+        send_process_signal(process_id, Signal::SIGKILL)?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while process_is_alive(process_id) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    if process_is_alive(process_id) {
+        return Err(ForgeError::ProcessDidNotStop(pid));
+    }
+    reap_exited_children();
+    Ok(())
 }
 
 extern "C" fn request_shutdown(_: i32) {
@@ -60,6 +107,7 @@ fn spawn_command(command: &str, working_dir: &str) -> Result<Child> {
         .arg("-c")
         .arg(format!("exec {command}"))
         .current_dir(working_dir)
+        .process_group(0)
         .spawn()?;
 
     let deadline = Instant::now() + Duration::from_millis(300);
@@ -103,7 +151,7 @@ fn mold(name: String, executable: String, working_dir: String) -> Result<String>
         started_at: Some(Local::now().to_rfc3339()),
     });
     if let Err(error) = storage::save(&processes) {
-        let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM);
+        let _ = stop_process(child.id());
         return Err(error);
     }
 
@@ -125,7 +173,7 @@ fn ignite(name: String) -> Result<String> {
     process.status = "Running".to_string();
     process.started_at = Some(Local::now().to_rfc3339());
     if let Err(error) = storage::save(&processes) {
-        let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+        let _ = stop_process(pid);
         return Err(error);
     }
 
@@ -144,11 +192,12 @@ fn quench(name: String) -> Result<String> {
         .pid
         .ok_or_else(|| ForgeError::ProcessNotRunning(name.clone()))?;
 
-    kill(Pid::from_raw(pid as i32), Signal::SIGTERM)?;
+    stop_process(pid)?;
 
     process.pid = None;
     process.status = "Stopped".to_string();
     storage::save(&processes)?;
+    reap_exited_children();
 
     Ok(format!("Process `{name}` stopped"))
 }
@@ -161,7 +210,7 @@ fn smelt(name: String) -> Result<String> {
         .position(|process| process.name == name)
         .ok_or_else(|| ForgeError::ProcessNotFound(name.clone()))?;
     if let Some(pid) = processes.processed[index].pid {
-        kill(Pid::from_raw(pid as i32), Signal::SIGTERM)?;
+        stop_process(pid)?;
     }
     processes.processed.remove(index);
     storage::save(&processes)?;
@@ -239,10 +288,8 @@ fn stop_managed_processes() -> Result<()> {
         .collect();
 
     for pid in &pids {
-        if let Err(error) = kill(*pid, Signal::SIGTERM) {
-            if error != nix::errno::Errno::ESRCH {
-                eprintln!("Could not gracefully stop process {}: {error}", pid);
-            }
+        if let Err(error) = send_process_signal(*pid, Signal::SIGTERM) {
+            eprintln!("Could not gracefully stop process {}: {error}", pid);
         }
     }
 
@@ -260,10 +307,8 @@ fn stop_managed_processes() -> Result<()> {
             "Process {} did not exit after SIGTERM; sending SIGKILL",
             pid
         );
-        if let Err(error) = kill(*pid, Signal::SIGKILL) {
-            if error != nix::errno::Errno::ESRCH {
-                eprintln!("Could not force stop process {}: {error}", pid);
-            }
+        if let Err(error) = send_process_signal(*pid, Signal::SIGKILL) {
+            eprintln!("Could not force stop process {}: {error}", pid);
         }
     }
 
@@ -296,6 +341,7 @@ fn stop_managed_processes() -> Result<()> {
             "Could not confirm shutdown of {unresolved_count} process(es); their PIDs remain in process.json"
         );
     }
+    reap_exited_children();
     Ok(())
 }
 

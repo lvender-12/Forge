@@ -25,6 +25,9 @@ pub enum ForgeError {
 
     #[error("failed to signal process: {0}")]
     Signal(#[from] nix::errno::Errno),
+
+    #[error("process {0} did not stop after SIGTERM and SIGKILL")]
+    ProcessDidNotStop(u32),
 }
 
 pub type Result<T> = std::result::Result<T, ForgeError>;
