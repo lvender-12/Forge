@@ -51,7 +51,7 @@ fn install_shutdown_handlers() -> Result<()> {
     Ok(())
 }
 
-fn spawn_command(command: &str) -> Result<Child> {
+fn spawn_command(command: &str, working_dir: &str) -> Result<Child> {
     if command.trim().is_empty() {
         return Err(ForgeError::EmptyCommand);
     }
@@ -59,6 +59,7 @@ fn spawn_command(command: &str) -> Result<Child> {
     let mut child = Command::new("/bin/sh")
         .arg("-c")
         .arg(format!("exec {command}"))
+        .current_dir(working_dir)
         .spawn()?;
 
     let deadline = Instant::now() + Duration::from_millis(300);
@@ -82,7 +83,7 @@ fn spawn_command(command: &str) -> Result<Child> {
     }
 }
 
-fn mold(name: String, executable: String) -> Result<String> {
+fn mold(name: String, executable: String, working_dir: String) -> Result<String> {
     let mut processes = storage::get_process()?;
     if processes
         .processed
@@ -92,11 +93,12 @@ fn mold(name: String, executable: String) -> Result<String> {
         return Err(ForgeError::DuplicateProcess(name));
     }
 
-    let child = spawn_command(&executable)?;
+    let child = spawn_command(&executable, &working_dir)?;
     processes.processed.push(Process {
         name,
         pid: Some(child.id()),
         executable,
+        working_dir,
         status: "Running".to_string(),
         started_at: Some(Local::now().to_rfc3339()),
     });
@@ -116,7 +118,7 @@ fn ignite(name: String) -> Result<String> {
         .find(|process| process.name == name)
         .ok_or_else(|| ForgeError::ProcessNotFound(name.clone()))?;
 
-    let child = spawn_command(&process.executable)?;
+    let child = spawn_command(&process.executable, &process.working_dir)?;
     let pid = child.id();
 
     process.pid = Some(pid);
@@ -168,8 +170,12 @@ fn smelt(name: String) -> Result<String> {
 
 fn dispatch(request: Request) -> Result<Response> {
     match request {
-        Request::Mold { name, executable } => Ok(Response::Success {
-            message: mold(name, executable)?,
+        Request::Mold {
+            name,
+            executable,
+            working_dir,
+        } => Ok(Response::Success {
+            message: mold(name, executable, working_dir)?,
         }),
         Request::Ignite { name } => Ok(Response::Success {
             message: ignite(name)?,

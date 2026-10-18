@@ -14,6 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => Request::Mold {
             name,
             executable: command,
+            working_dir: std::env::current_dir()?.to_string_lossy().into_owned(),
         },
         Command::Ignite { name } => Request::Ignite { name },
         Command::Quench { name } => Request::Quench { name },
@@ -42,8 +43,15 @@ fn print_anvils(processes: &[Process]) {
         return;
     }
 
-    let headings = ["NAME", "STATUS", "PID", "STARTED", "COMMAND"];
-    let mut rows: Vec<[String; 5]> = processes
+    let headings = [
+        "NAME",
+        "STATUS",
+        "PID",
+        "STARTED",
+        "WORKING DIRECTORY",
+        "COMMAND",
+    ];
+    let mut rows: Vec<[String; 6]> = processes
         .iter()
         .map(|process| {
             [
@@ -56,12 +64,13 @@ fn print_anvils(processes: &[Process]) {
                     || "-".to_string(),
                     |started| truncate(&started.replace('T', " "), 19),
                 ),
+                truncate(&process.working_dir, 48),
                 truncate(&process.executable, 64),
             ]
         })
         .collect();
 
-    let widths: [usize; 5] = std::array::from_fn(|column| {
+    let widths: [usize; 6] = std::array::from_fn(|column| {
         rows.iter()
             .map(|row| row[column].chars().count())
             .chain(std::iter::once(headings[column].chars().count()))
@@ -69,28 +78,31 @@ fn print_anvils(processes: &[Process]) {
             .unwrap_or(0)
     });
     let border = format!(
-        "┌{}┬{}┬{}┬{}┬{}┐",
+        "┌{}┬{}┬{}┬{}┬{}┬{}┐",
         "─".repeat(widths[0] + 2),
         "─".repeat(widths[1] + 2),
         "─".repeat(widths[2] + 2),
         "─".repeat(widths[3] + 2),
         "─".repeat(widths[4] + 2),
+        "─".repeat(widths[5] + 2),
     );
     let divider = format!(
-        "├{}┼{}┼{}┼{}┼{}┤",
+        "├{}┼{}┼{}┼{}┼{}┼{}┤",
         "─".repeat(widths[0] + 2),
         "─".repeat(widths[1] + 2),
         "─".repeat(widths[2] + 2),
         "─".repeat(widths[3] + 2),
         "─".repeat(widths[4] + 2),
+        "─".repeat(widths[5] + 2),
     );
     let bottom = format!(
-        "└{}┴{}┴{}┴{}┴{}┘",
+        "└{}┴{}┴{}┴{}┴{}┴{}┘",
         "─".repeat(widths[0] + 2),
         "─".repeat(widths[1] + 2),
         "─".repeat(widths[2] + 2),
         "─".repeat(widths[3] + 2),
         "─".repeat(widths[4] + 2),
+        "─".repeat(widths[5] + 2),
     );
 
     println!("{border}");
@@ -102,9 +114,9 @@ fn print_anvils(processes: &[Process]) {
     println!("{bottom}\n");
 }
 
-fn print_row(row: &[String; 5], widths: &[usize; 5]) {
+fn print_row(row: &[String; 6], widths: &[usize; 6]) {
     print!("│");
-    for column in 0..5 {
+    for column in 0..6 {
         print!(" {:width$} │", row[column], width = widths[column]);
     }
     println!();

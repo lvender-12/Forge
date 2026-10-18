@@ -4,11 +4,21 @@ use crate::model::Process;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
-    Mold { name: String, executable: String },
-    Ignite { name: String },
-    Quench { name: String },
+    Mold {
+        name: String,
+        executable: String,
+        working_dir: String,
+    },
+    Ignite {
+        name: String,
+    },
+    Quench {
+        name: String,
+    },
     Anvils,
-    Smelt { name: String },
+    Smelt {
+        name: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
