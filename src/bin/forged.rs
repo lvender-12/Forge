@@ -56,11 +56,30 @@ fn spawn_command(command: &str) -> Result<Child> {
         return Err(ForgeError::EmptyCommand);
     }
 
-    // exec replaces the shell with the program for simple commands.
-    Ok(Command::new("/bin/sh")
+    let mut child = Command::new("/bin/sh")
         .arg("-c")
         .arg(format!("exec {command}"))
-        .spawn()?)
+        .spawn()?;
+
+    let deadline = Instant::now() + Duration::from_millis(300);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(ForgeError::CommandExited {
+                    command: command.to_string(),
+                    status: status.to_string(),
+                });
+            }
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => return Ok(child),
+            Err(error) => {
+                let _ = child.kill();
+                return Err(error.into());
+            }
+        }
+    }
 }
 
 fn mold(name: String, executable: String) -> Result<String> {
@@ -158,13 +177,31 @@ fn dispatch(request: Request) -> Result<Response> {
         Request::Quench { name } => Ok(Response::Success {
             message: quench(name)?,
         }),
-        Request::Anvils => Ok(Response::Anvils {
-            processes: storage::get_process()?.processed,
-        }),
+        Request::Anvils => anvils(),
         Request::Smelt { name } => Ok(Response::Success {
             message: smelt(name)?,
         }),
     }
+}
+
+fn anvils() -> Result<Response> {
+    let mut list = storage::get_process()?;
+    let mut changed = false;
+    for process in &mut list.processed {
+        if let Some(pid) = process.pid {
+            if !process_is_alive(Pid::from_raw(pid as i32)) {
+                process.pid = None;
+                process.status = "Exited".to_string();
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        storage::save(&list)?;
+    }
+    Ok(Response::Anvils {
+        processes: list.processed,
+    })
 }
 
 fn handle_client(mut stream: UnixStream) -> Result<()> {

@@ -20,6 +20,9 @@ pub enum ForgeError {
     #[error("the command cannot be empty")]
     EmptyCommand,
 
+    #[error("command `{command}` exited during startup ({status}); process was not registered")]
+    CommandExited { command: String, status: String },
+
     #[error("failed to signal process: {0}")]
     Signal(#[from] nix::errno::Errno),
 }
