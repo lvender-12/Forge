@@ -1,2 +1,6 @@
 /target
 /data/process.json
+/pkg/
+/src/Forge/
+/Forge/
+/forge-*.pkg.tar.zst
