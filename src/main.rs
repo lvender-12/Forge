@@ -1,24 +1,126 @@
-use nix::{
-    sys::signal::{self, kill},
-    unistd::Pid,
+use forge::{
+    cli::{Command, parse},
+    client::send,
+    common::protocol::{Request, Response},
+    model::Process,
 };
-use std::{io, process::Command};
 
-fn main() -> io::Result<()> {
-    println!("Forge starting child process");
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let request = match parse() {
+        Command::Mold {
+            name,
+            _exec: _,
+            command,
+        } => Request::Mold {
+            name,
+            executable: command,
+        },
+        Command::Ignite { name } => Request::Ignite { name },
+        Command::Quench { name } => Request::Quench { name },
+        Command::Anvils => Request::Anvils,
+        Command::Smelt { name } => Request::Smelt { name },
+    };
 
-    let mut child = Command::new("sleep").arg("5").spawn()?;
+    let response = send(request)?;
+    match response {
+        Response::Success { message } => {
+            println!("{message}");
+            Ok(())
+        }
+        Response::Anvils { processes } => {
+            print_anvils(&processes);
+            Ok(())
+        }
+        Response::Error { message } => Err(message.into()),
+    }
+}
 
-    let pid = Pid::from_raw(child.id() as i32);
+fn print_anvils(processes: &[Process]) {
+    println!("\n  FORGE  /  ANVILS\n");
+    if processes.is_empty() {
+        println!("  No managed processes yet. Add one with: forge mold NAME exec COMMAND\n");
+        return;
+    }
 
-    println!("child pid {}", child.id());
-    println!("Forge waiting child process");
+    let headings = ["NAME", "STATUS", "PID", "STARTED", "COMMAND"];
+    let mut rows: Vec<[String; 5]> = processes
+        .iter()
+        .map(|process| {
+            [
+                truncate(&process.name, 24),
+                truncate(&process.status, 12),
+                process
+                    .pid
+                    .map_or_else(|| "-".to_string(), |pid| pid.to_string()),
+                process.started_at.as_deref().map_or_else(
+                    || "-".to_string(),
+                    |started| truncate(&started.replace('T', " "), 19),
+                ),
+                truncate(&process.executable, 64),
+            ]
+        })
+        .collect();
 
-    kill(pid, signal::SIGTERM)?;
+    let widths: [usize; 5] = std::array::from_fn(|column| {
+        rows.iter()
+            .map(|row| row[column].chars().count())
+            .chain(std::iter::once(headings[column].chars().count()))
+            .max()
+            .unwrap_or(0)
+    });
+    let border = format!(
+        "┌{}┬{}┬{}┬{}┬{}┐",
+        "─".repeat(widths[0] + 2),
+        "─".repeat(widths[1] + 2),
+        "─".repeat(widths[2] + 2),
+        "─".repeat(widths[3] + 2),
+        "─".repeat(widths[4] + 2),
+    );
+    let divider = format!(
+        "├{}┼{}┼{}┼{}┼{}┤",
+        "─".repeat(widths[0] + 2),
+        "─".repeat(widths[1] + 2),
+        "─".repeat(widths[2] + 2),
+        "─".repeat(widths[3] + 2),
+        "─".repeat(widths[4] + 2),
+    );
+    let bottom = format!(
+        "└{}┴{}┴{}┴{}┴{}┘",
+        "─".repeat(widths[0] + 2),
+        "─".repeat(widths[1] + 2),
+        "─".repeat(widths[2] + 2),
+        "─".repeat(widths[3] + 2),
+        "─".repeat(widths[4] + 2),
+    );
 
-    let status = child.wait()?;
+    println!("{border}");
+    print_row(&headings.map(str::to_string), &widths);
+    println!("{divider}");
+    for row in rows.drain(..) {
+        print_row(&row, &widths);
+    }
+    println!("{bottom}\n");
+}
 
-    println!("Child exited {status}");
+fn print_row(row: &[String; 5], widths: &[usize; 5]) {
+    print!("│");
+    for column in 0..5 {
+        print!(" {:width$} │", row[column], width = widths[column]);
+    }
+    println!();
+}
 
-    Ok(())
+fn truncate(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let shortened: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        let mut shortened: String = shortened
+            .chars()
+            .take(max_chars.saturating_sub(1))
+            .collect();
+        shortened.push('…');
+        shortened
+    } else {
+        shortened
+    }
 }
